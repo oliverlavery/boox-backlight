@@ -232,6 +232,7 @@ class LearnService : Service(), SensorEventListener {
         registerReceiver(screenReceiver, android.content.IntentFilter(Intent.ACTION_SCREEN_ON))
 
         startForeground(NOTIF_ID, buildNotification())
+        radioManager.start()
         log("service", mapOf("event" to "started", "auto" to autoEnabled, "lux_sensor" to (lux?.name ?: "MISSING")))
     }
 
@@ -249,10 +250,13 @@ class LearnService : Service(), SensorEventListener {
         return START_STICKY
     }
 
+    private val radioManager: RadioManager by lazy { RadioManager(this, handler) }
+
     override fun onDestroy() {
         sensors.unregisterListener(this)
         contentResolver.unregisterContentObserver(ctmObserver)
         unregisterReceiver(screenReceiver)
+        radioManager.stop()
         super.onDestroy()
     }
 
