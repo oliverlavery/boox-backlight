@@ -42,7 +42,6 @@ class LearnService : Service(), SensorEventListener {
     private val state = LightModel.State()
 
     @Volatile private var lastLux: Float? = null
-    private var lastLuxLogMs = 0L
     private var lastLuxBucket = -1
     @Volatile private var lastUserTouchMs = 0L
     private var lastUserTouchElapsedMs = 0L
@@ -79,6 +78,21 @@ class LearnService : Service(), SensorEventListener {
         LiveStatus.state = state
         LiveStatus.serviceStartedElapsedMs = startedElapsedMs
         if (event != null) { LiveStatus.lastEvent = event; LiveStatus.lastEventElapsedMs = android.os.SystemClock.elapsedRealtime() }
+    }
+
+    // ---- power: sensor paused while screen is off (wakeup lux = SoC wakeups all night) ----
+    private var luxSensor: Sensor? = null
+    private var sensorActive = false
+
+    private fun setLuxListener(active: Boolean) {
+        if (active == sensorActive) return
+        sensorActive = active
+        if (active && luxSensor != null) {
+            sensors.registerListener(this, luxSensor, SensorManager.SENSOR_DELAY_NORMAL)
+            coldStart = true   // first reading after resume is authoritative again
+        } else {
+            sensors.unregisterListener(this)
+        }
     }
 
     private fun ctm(key: String): Int = Settings.System.getInt(contentResolver, key, -1)
@@ -159,15 +173,21 @@ class LearnService : Service(), SensorEventListener {
         publish("user_adjust ${b}/${w}")
     }
 
-    // ---- wake handling: flush pending bucket commit immediately on wake ----
+    // ---- wake handling: pause/resume lux sensor; flush pending bucket commit on wake ----
     private val screenReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == Intent.ACTION_SCREEN_ON && pendingBucket != -1) {
-                // Wake-up transitions are real, not flutter — commit now.
-                val b = pendingBucket
-                pendingBucket = -1
-                lastLuxBucket = b
-                maybeActuate("screen_on")
+            when (intent?.action) {
+                Intent.ACTION_SCREEN_OFF -> setLuxListener(false)
+                Intent.ACTION_SCREEN_ON -> {
+                    setLuxListener(true)
+                    if (pendingBucket != -1) {
+                        // Wake-up transitions are real, not flutter — commit now.
+                        val b = pendingBucket
+                        pendingBucket = -1
+                        lastLuxBucket = b
+                        maybeActuate("screen_on")
+                    }
+                }
             }
         }
     }
@@ -180,23 +200,18 @@ class LearnService : Service(), SensorEventListener {
         val lux = event.values[0]
         val prevLux = lastLux
         lastLux = lux
-        publish()
         if (coldStart) {
-            // First reading after (re)start: adopt bucket and apply learned values
-            // immediately if the environment doesn't match them (e.g. service was
-            // killed in the bedroom and restarted in the living room).
+            // First reading after (re)start or sensor resume: adopt bucket and apply
+            // learned values immediately if the environment doesn't match them.
             coldStart = false
             lastLuxBucket = LightModel.luxBucket(lux)
+            log("lux", mapOf("lux" to lux, "bucket" to lastLuxBucket, "event" to "entry"))
+            publish("lux ${String.format("%.0f", lux)} → B$lastLuxBucket")
             maybeActuate("cold_start")
             return
         }
-        // Log lux sparingly: bucket entry + 1/sec heartbeat max (sensor spams at ~15Hz).
-        val now = android.os.SystemClock.elapsedRealtime()
-        if (prevLux == null || LightModel.luxBucket(lux) != LightModel.luxBucket(prevLux)
-            || now - lastLuxLogMs > 1000) {
-            lastLuxLogMs = now
-            log("lux", mapOf("lux" to lux))
-        }
+        // Power: log ONLY bucket entries — no heartbeat (sensor spams continuously;
+        // 1/sec logging was ~86k flash writes/day).
         val bucket = LightModel.luxBucket(lux)
         if (bucket != lastLuxBucket) {
             val nowMs = android.os.SystemClock.elapsedRealtime()
@@ -205,6 +220,8 @@ class LearnService : Service(), SensorEventListener {
                 if (nowMs - pendingSinceMs > BOUNCE_MS) {
                     lastLuxBucket = bucket
                     pendingBucket = -1
+                    log("lux", mapOf("lux" to lux, "bucket" to bucket, "event" to "entry"))
+                    publish("lux ${String.format("%.0f", lux)} → B$bucket")
                     maybeActuate("lux_bucket=$bucket")
                 }
             } else {
@@ -241,20 +258,25 @@ class LearnService : Service(), SensorEventListener {
         restore()
         autoEnabled = getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean("auto", true)
 
-        val lux = sensors.getDefaultSensor(Sensor.TYPE_LIGHT, true)
+        luxSensor = sensors.getDefaultSensor(Sensor.TYPE_LIGHT, true)
             ?: sensors.getDefaultSensor(Sensor.TYPE_LIGHT)
-        sensors.registerListener(this, lux, SensorManager.SENSOR_DELAY_NORMAL)
+        // Screen starts off? Then don't register yet — screenReceiver flips it on.
+        // (Can't query screen state directly; registering now is harmless and the
+        // first SCREEN_OFF will pause us. Cold-start apply happens on first reading.)
+        setLuxListener(true)
         lastLuxBucket = lastLux?.let { LightModel.luxBucket(it) } ?: -1
 
         listOf("screen_ctm_brightness", "screen_ctm_temperature").forEach {
             contentResolver.registerContentObserver(Settings.System.getUriFor(it), false, ctmObserver)
         }
 
-        registerReceiver(screenReceiver, android.content.IntentFilter(Intent.ACTION_SCREEN_ON))
+        registerReceiver(screenReceiver, android.content.IntentFilter(Intent.ACTION_SCREEN_ON).apply {
+            addAction(Intent.ACTION_SCREEN_OFF)
+        })
 
         startForeground(NOTIF_ID, buildNotification())
         startedElapsedMs = android.os.SystemClock.elapsedRealtime()
-        log("service", mapOf("event" to "started", "auto" to autoEnabled, "lux_sensor" to (lux?.name ?: "MISSING")))
+        log("service", mapOf("event" to "started", "auto" to autoEnabled, "lux_sensor" to (luxSensor?.name ?: "MISSING")))
         publish("service started")
     }
 
