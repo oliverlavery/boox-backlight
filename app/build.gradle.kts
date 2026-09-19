@@ -33,4 +33,8 @@ dependencies {
     // Phase 1: observe + log only. Zero deps on purpose.
     // Phase 2 will add nothing either — rxjava-style flows hand-rolled or kotlinx-coroutines.
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+    // Hidden-API bypass: android.onyx.hardware.DeviceController is a hidden framework
+    // class; meta-reflection exemption is patched on this fw (Android 15). LSPosed's
+    // Unsafe-based bypass works. MIT, 30KB, no transitive deps.
+    implementation("org.lsposed.hiddenapibypass:hiddenapibypass:4.3")
 }

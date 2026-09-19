@@ -145,6 +145,7 @@ class MainActivity : Activity() {
         }
         row.addView(button("Auto ON/OFF", LearnService.ACTION_TOGGLE))
         row.addView(button("Apply now", LearnService.ACTION_ACTUATE))
+        row.addView(button("Force", LearnService.ACTION_FORCE))
 
         root.addView(title)
         root.addView(statusView)

@@ -13,7 +13,7 @@ import org.json.JSONObject
 object LightModel {
 
     const val NATIVE_MAX = 32
-    const val DEADBAND_STEPS = 3          // never apply unless |learned-current| > this
+    const val DEADBAND_STEPS = 1          // never apply unless |learned-current| > this (32-step scale)
 
     // Log-scale lux bucket upper bounds (9 buckets: <2, <5, <10, <25, <60, <150, <400, <1000, rest)
     val LUX_BOUNDS = floatArrayOf(2f, 5f, 10f, 25f, 60f, 150f, 400f, 1000f)

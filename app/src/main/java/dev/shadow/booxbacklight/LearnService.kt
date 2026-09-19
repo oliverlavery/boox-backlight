@@ -104,15 +104,25 @@ class LearnService : Service(), SensorEventListener {
     private val ggAction = "com.onyx.darie.calin.gentleglowonyxboox.CHANGE_LIGHT"
 
     private fun actuate(nativeB: Int, nativeW: Int): Boolean {
+        // Primary: native DeviceController reflection (no GG dependency, no ANR risk).
+        if (NativeLight.set(nativeB, nativeW)) {
+            expectedB = nativeB; expectedW = nativeW
+            echoClearAt = System.currentTimeMillis() + ECHO_MS
+            log("actuate", mapOf("path" to "native", "nativeB" to nativeB, "nativeW" to nativeW))
+            publish("actuate $nativeB/$nativeW (native)")
+            return true
+        }
+        // Fallback: GG broadcast (requires GG process warm; cold spawn can ANR-kill
+        // the receiver → silent no-op, verified 2026-09-19).
         val ggB = Math.ceil(nativeB * 100.0 / LightModel.NATIVE_MAX).toInt().coerceIn(0, 100)
         val ggW = Math.ceil(nativeW * 100.0 / LightModel.NATIVE_MAX).toInt().coerceIn(0, 100)
         val i = Intent(ggAction).setComponent(ggComponent)
             .putExtra("BRIGHTNESS", ggB).putExtra("WARMTH", ggW)
         return try {
             sendBroadcast(i)
-            expectedB = nativeB; expectedW = nativeW
+            expectedB = nativeB; expectedW = nativeW   // GG writes the mirror — suppress our own echo
             echoClearAt = System.currentTimeMillis() + ECHO_MS
-            log("actuate", mapOf("nativeB" to nativeB, "nativeW" to nativeW, "ggB" to ggB, "ggW" to ggW))
+            log("actuate", mapOf("path" to "gg", "nativeB" to nativeB, "nativeW" to nativeW, "ggB" to ggB, "ggW" to ggW))
             publish("actuate $nativeB/$nativeW (gg $ggB/$ggW)")
             true
         } catch (e: Exception) {
@@ -157,9 +167,12 @@ class LearnService : Service(), SensorEventListener {
         override fun onChange(selfChange: Boolean, uri: Uri?) {
             val key = uri?.lastPathSegment ?: return
             val v = ctm(key)
-            if (System.currentTimeMillis() < echoClearAt &&
-                ((key == "screen_ctm_brightness" && v == expectedB) ||
-                 (key == "screen_ctm_temperature" && v == expectedW))) {
+            // Echo suppression by VALUE, not by time window: GG can lag our actuation
+            // by >10s (cold-spawn), and a mirror write matching our expected value is
+            // ours regardless of when it lands. (User setting the identical value is
+            // a no-op — nothing to learn.)
+            if ((key == "screen_ctm_brightness" && v == expectedB) ||
+                (key == "screen_ctm_temperature" && v == expectedW)) {
                 log("echo_ignored", mapOf("key" to key, "value" to v)); return
             }
             if (key == "screen_ctm_brightness") pendingB = v
@@ -319,6 +332,13 @@ class LearnService : Service(), SensorEventListener {
                 publish("auto ${if (autoEnabled) "ON" else "OFF"}")
             }
             ACTION_ACTUATE -> { maybeActuate("manual_refresh"); publish("manual refresh") }
+            ACTION_FORCE -> {
+                // Debug: probe + actuate learned target immediately, ignoring gates.
+                val lux = lastLux ?: 0f
+                val (b, w) = LightModel.predict(state, lux, ZonedDateTime.now(ZoneId.systemDefault()).hour)
+                log("apply", mapOf("reason" to "force_test", "target" to "$b/$w"))
+                actuate(b, w)
+            }
         }
         return START_STICKY
     }
@@ -349,6 +369,7 @@ class LearnService : Service(), SensorEventListener {
         private const val PREFS = "light"
         const val ACTION_TOGGLE = "dev.shadow.booxbacklight.TOGGLE"
         const val ACTION_ACTUATE = "dev.shadow.booxbacklight.ACTUATE"
+        const val ACTION_FORCE = "dev.shadow.booxbacklight.FORCE"
         const val SETTLE_MS = 1500L      // drag settle debounce
         const val USER_QUIET_MS = 4 * 60 * 1000L   // no actuation within 4 min of a touch
         const val ECHO_MS = 6000L        // ignore mirror echo for 6s after actuation
