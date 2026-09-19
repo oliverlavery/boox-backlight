@@ -45,6 +45,7 @@ class LearnService : Service(), SensorEventListener {
     private var lastLuxLogMs = 0L
     private var lastLuxBucket = -1
     @Volatile private var lastUserTouchMs = 0L
+    private var lastUserTouchElapsedMs = 0L
     private var autoEnabled = true
 
     // echo suppression
@@ -67,6 +68,19 @@ class LearnService : Service(), SensorEventListener {
         Log.i(TAG, line.trim())
     }
 
+    private fun publish(event: String? = null) {
+        LiveStatus.autoEnabled = autoEnabled
+        LiveStatus.lastLux = lastLux
+        LiveStatus.lastLuxBucket = lastLuxBucket
+        LiveStatus.pendingBucket = pendingBucket
+        LiveStatus.pendingSinceElapsedMs = pendingSinceMs
+        LiveStatus.lastUserTouchElapsedMs = lastUserTouchElapsedMs
+        LiveStatus.echoClearElapsedMs = echoClearAt
+        LiveStatus.state = state
+        LiveStatus.serviceStartedElapsedMs = startedElapsedMs
+        if (event != null) { LiveStatus.lastEvent = event; LiveStatus.lastEventElapsedMs = android.os.SystemClock.elapsedRealtime() }
+    }
+
     private fun ctm(key: String): Int = Settings.System.getInt(contentResolver, key, -1)
 
     // ---- GG actuation ----
@@ -85,6 +99,7 @@ class LearnService : Service(), SensorEventListener {
             expectedB = nativeB; expectedW = nativeW
             echoClearAt = System.currentTimeMillis() + ECHO_MS
             log("actuate", mapOf("nativeB" to nativeB, "nativeW" to nativeW, "ggB" to ggB, "ggW" to ggW))
+            publish("actuate $nativeB/$nativeW (gg $ggB/$ggW)")
             true
         } catch (e: Exception) {
             log("actuate_failed", mapOf("error" to e.message))
@@ -109,6 +124,7 @@ class LearnService : Service(), SensorEventListener {
         } else {
             log("skip", mapOf("reason" to reason, "target" to "$lb/$lw", "current" to "$cb/$cw"))
         }
+        publish()
     }
 
     // ---- observers ----
@@ -124,6 +140,7 @@ class LearnService : Service(), SensorEventListener {
             if (key == "screen_ctm_brightness") pendingB = v
             if (key == "screen_ctm_temperature") pendingW = v
             lastUserTouchMs = System.currentTimeMillis()
+            lastUserTouchElapsedMs = android.os.SystemClock.elapsedRealtime()
             handler.removeCallbacks(settle)
             handler.postDelayed(settle, SETTLE_MS)
         }
@@ -139,6 +156,7 @@ class LearnService : Service(), SensorEventListener {
         LightModel.onUserAdjust(state, lux, hour, b.takeIf { it >= 0 }, w.takeIf { it >= 0 })
         persist()
         log("user_adjust", mapOf("brightness" to b, "warmth" to w, "lux" to lux, "hour" to hour))
+        publish("user_adjust ${b}/${w}")
     }
 
     // ---- wake handling: flush pending bucket commit immediately on wake ----
@@ -156,11 +174,13 @@ class LearnService : Service(), SensorEventListener {
 
     // ---- sensor ----
     @Volatile private var coldStart = true
+    private var startedElapsedMs = 0L
 
     override fun onSensorChanged(event: SensorEvent) {
         val lux = event.values[0]
         val prevLux = lastLux
         lastLux = lux
+        publish()
         if (coldStart) {
             // First reading after (re)start: adopt bucket and apply learned values
             // immediately if the environment doesn't match them (e.g. service was
@@ -190,6 +210,7 @@ class LearnService : Service(), SensorEventListener {
             } else {
                 pendingBucket = bucket
                 pendingSinceMs = nowMs
+                publish()
             }
         }
     }
@@ -233,7 +254,9 @@ class LearnService : Service(), SensorEventListener {
 
         startForeground(NOTIF_ID, buildNotification())
         radioManager.start()
+        startedElapsedMs = android.os.SystemClock.elapsedRealtime()
         log("service", mapOf("event" to "started", "auto" to autoEnabled, "lux_sensor" to (lux?.name ?: "MISSING")))
+        publish("service started")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -244,8 +267,9 @@ class LearnService : Service(), SensorEventListener {
                 log("service", mapOf("event" to "auto_toggled", "auto" to autoEnabled))
                 if (autoEnabled) maybeActuate("toggled_on")
                 TileSync.refresh(this)
+                publish("auto ${if (autoEnabled) "ON" else "OFF"}")
             }
-            ACTION_ACTUATE -> maybeActuate("manual_refresh")
+            ACTION_ACTUATE -> { maybeActuate("manual_refresh"); publish("manual refresh") }
         }
         return START_STICKY
     }
