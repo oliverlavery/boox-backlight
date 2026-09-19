@@ -131,10 +131,21 @@ class LearnService : Service(), SensorEventListener {
         }
         val (lb, lw) = LightModel.predict(state, lux, ZonedDateTime.now(ZoneId.systemDefault()).hour)
         val (cb, cw) = ctm("screen_ctm_brightness") to ctm("screen_ctm_temperature")
+        // Churn guard: the mirror key may not reflect our GG actuations, so a fresh
+        // read can look stale forever. If we actuated to this same target recently,
+        // assume it landed and stand down (a user touch resets this via recency gate).
+        if (lb == lastTargetB && lw == lastTargetW &&
+            android.os.SystemClock.elapsedRealtime() - lastTargetElapsedMs < TARGET_COOLDOWN_MS) {
+            log("skip", mapOf("reason" to "recent_target", "target" to "$lb/$lw", "current" to "$cb/$cw"))
+            publish()
+            return
+        }
         if (Math.abs(lb - cb) > LightModel.DEADBAND_STEPS ||
             Math.abs(lw - cw) > LightModel.DEADBAND_STEPS) {
             log("apply", mapOf("reason" to reason, "target" to "$lb/$lw", "current" to "$cb/$cw"))
             actuate(lb, lw)
+            lastTargetB = lb; lastTargetW = lw
+            lastTargetElapsedMs = android.os.SystemClock.elapsedRealtime()
         } else {
             log("skip", mapOf("reason" to reason, "target" to "$lb/$lw", "current" to "$cb/$cw"))
         }
@@ -214,6 +225,13 @@ class LearnService : Service(), SensorEventListener {
         // 1/sec logging was ~86k flash writes/day).
         val bucket = LightModel.luxBucket(lux)
         if (bucket != lastLuxBucket) {
+            // Boundary hysteresis: require the lux to be clearly INSIDE the new bucket
+            // (25% past the shared bound) before treating an adjacent move as real.
+            // Kills flutter when readings hover on a bound (e.g. lux 5–6 vs bound 5).
+            if (Math.abs(bucket - lastLuxBucket) == 1 && !clearlyInside(lux, lastLuxBucket, bucket)) {
+                publish()
+                return
+            }
             val nowMs = android.os.SystemClock.elapsedRealtime()
             if (bucket == pendingBucket) {
                 // Candidate still held after BOUNCE_MS of realtime (sleep-safe)? Commit.
@@ -234,6 +252,16 @@ class LearnService : Service(), SensorEventListener {
 
     private var pendingBucket = -1
     private var pendingSinceMs = 0L
+
+    // churn guard state
+    private var lastTargetB = -1; private var lastTargetW = -1
+    private var lastTargetElapsedMs = 0L
+
+    /** True if lux is ≥25% past the shared bound into the new bucket's side. */
+    private fun clearlyInside(lux: Float, from: Int, to: Int): Boolean {
+        val bound = if (to > from) LightModel.LUX_BOUNDS[from] else LightModel.LUX_BOUNDS[to]
+        return if (to > from) lux > bound * 1.25f else lux < bound * 0.75f
+    }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
 
@@ -325,6 +353,7 @@ class LearnService : Service(), SensorEventListener {
         const val USER_QUIET_MS = 4 * 60 * 1000L   // no actuation within 4 min of a touch
         const val ECHO_MS = 6000L        // ignore mirror echo for 6s after actuation
         const val BOUNCE_MS = 3000L      // bucket must hold this long before actuation (hysteresis)
+        const val TARGET_COOLDOWN_MS = 90 * 1000L  // don't re-actuate same target within 90s (mirror staleness guard)
         fun start(ctx: Context) = ctx.startForegroundService(Intent(ctx, LearnService::class.java))
     }
 }
