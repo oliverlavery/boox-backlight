@@ -105,7 +105,9 @@ class LearnService : Service(), SensorEventListener {
 
     private fun actuate(nativeB: Int, nativeW: Int): Boolean {
         // Primary: native DeviceController reflection (no GG dependency, no ANR risk).
-        if (NativeLight.set(nativeB, nativeW)) {
+        // 3-arg variant with flag=0 suppresses the Onyx system-UI slider HUD
+        // (verified 2026-09-19: flag 0/2 → no HUD; 2-arg and flag 1 → HUD pops).
+        if (NativeLight.setWithFlag(nativeB, nativeW, HUD_FLAG)) {
             expectedB = nativeB; expectedW = nativeW
             echoClearAt = System.currentTimeMillis() + ECHO_MS
             log("actuate", mapOf("path" to "native", "nativeB" to nativeB, "nativeW" to nativeW))
@@ -333,11 +335,20 @@ class LearnService : Service(), SensorEventListener {
             }
             ACTION_ACTUATE -> { maybeActuate("manual_refresh"); publish("manual refresh") }
             ACTION_FORCE -> {
-                // Debug: probe + actuate learned target immediately, ignoring gates.
-                val lux = lastLux ?: 0f
-                val (b, w) = LightModel.predict(state, lux, ZonedDateTime.now(ZoneId.systemDefault()).hour)
-                log("apply", mapOf("reason" to "force_test", "target" to "$b/$w"))
-                actuate(b, w)
+                // Debug: probe + actuate, ignoring gates. Optional extras:
+                // "b"/"w" (native 0-32) and "flag" (3-arg setLightValue variant).
+                val b = intent.getIntExtra("b", -1)
+                val w = intent.getIntExtra("w", -1)
+                if (b >= 0 && w >= 0) {
+                    val flag = intent.getIntExtra("flag", Int.MIN_VALUE)
+                    val ok = if (flag == Int.MIN_VALUE) NativeLight.set(b, w) else NativeLight.setWithFlag(b, w, flag)
+                    log("apply", mapOf("reason" to "force_test", "target" to "$b/$w", "flag" to flag, "ok" to ok))
+                } else {
+                    val lux = lastLux ?: 0f
+                    val (tb, tw) = LightModel.predict(state, lux, ZonedDateTime.now(ZoneId.systemDefault()).hour)
+                    log("apply", mapOf("reason" to "force_test", "target" to "$tb/$tw"))
+                    actuate(tb, tw)
+                }
             }
         }
         return START_STICKY
@@ -375,6 +386,7 @@ class LearnService : Service(), SensorEventListener {
         const val ECHO_MS = 6000L        // ignore mirror echo for 6s after actuation
         const val BOUNCE_MS = 3000L      // bucket must hold this long before actuation (hysteresis)
         const val TARGET_COOLDOWN_MS = 90 * 1000L  // don't re-actuate same target within 90s (mirror staleness guard)
+        const val HUD_FLAG = 0                     // setLightValue 3-arg flag: suppresses system-UI slider HUD
         fun start(ctx: Context) = ctx.startForegroundService(Intent(ctx, LearnService::class.java))
     }
 }

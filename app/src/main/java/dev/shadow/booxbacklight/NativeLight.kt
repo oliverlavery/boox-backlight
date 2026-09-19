@@ -18,6 +18,7 @@ object NativeLight {
     private const val TAG = "BacklightLearn"
     private var setBMethod: Method? = null
     private var setWMethod: Method? = null
+    private var setFlagMethod: Method? = null
     private var probed = false
 
     val available: Boolean get() = probed && setBMethod != null
@@ -58,14 +59,25 @@ object NativeLight {
             }
             setBMethod = cand.firstOrNull { it.parameterTypes.size == 2 }
             setWMethod = setBMethod
-            // Some firmwares take (type, value, flag) — remember as fallback
-            if (setBMethod == null) {
-                setBMethod = cand.firstOrNull { it.parameterTypes.size == 3 }
-                setWMethod = setBMethod
-            }
+            setFlagMethod = cand.firstOrNull { it.parameterTypes.size == 3 }
             Log.i(TAG, "NativeLight probe: setMethod=${setBMethod?.name} arity=${setBMethod?.parameterTypes?.size}")
         } catch (e: Throwable) {
             Log.e(TAG, "NativeLight probe failed: ${e.message}")
+        }
+    }
+
+    /** 3-arg setLightValue(type, value, flag) — flag semantics unknown; experiment. */
+    fun setWithFlag(brightness: Int, warmth: Int, flag: Int): Boolean {
+        probe()
+        val m = setFlagMethod ?: return false
+        return try {
+            m.invoke(null, 7, brightness, flag)
+            m.invoke(null, 6, warmth, flag)
+            Log.i(TAG, "NativeLight.setWithFlag ok: B=$brightness W=$warmth flag=$flag")
+            true
+        } catch (e: Throwable) {
+            Log.e(TAG, "NativeLight.setWithFlag failed: ${e.message}")
+            false
         }
     }
 

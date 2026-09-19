@@ -147,9 +147,21 @@ class MainActivity : Activity() {
         row.addView(button("Apply now", LearnService.ACTION_ACTUATE))
         row.addView(button("Force", LearnService.ACTION_FORCE))
 
+        // HUD experiment: same value, different setLightValue variants
+        fun forceExtra(key: String, v: Int) = Intent(this, LearnService::class.java)
+            .setAction(LearnService.ACTION_FORCE).putExtra(key, v)
+        val row2 = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER
+        }
+        row2.addView(Button(this).apply { text = "2-arg"; setOnClickListener { startService(forceExtra("b", 12).putExtra("w", 8)) } })
+        row2.addView(Button(this).apply { text = "flag 0"; setOnClickListener { startService(forceExtra("b", 12).putExtra("w", 8).putExtra("flag", 0)) } })
+        row2.addView(Button(this).apply { text = "flag 1"; setOnClickListener { startService(forceExtra("b", 12).putExtra("w", 8).putExtra("flag", 1)) } })
+        row2.addView(Button(this).apply { text = "flag 2"; setOnClickListener { startService(forceExtra("b", 12).putExtra("w", 8).putExtra("flag", 2)) } })
+
         root.addView(title)
         root.addView(statusView)
         root.addView(row)
+        root.addView(row2)
         setContentView(root)
     }
 
