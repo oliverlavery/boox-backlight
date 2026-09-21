@@ -8,7 +8,8 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
-        android:label="BacklightLearn"
+        android:icon="@mipmap/ic_launcher"
+        android:label="Adaptive Light"
         android:theme="@android:style/Theme.Material.NoActionBar">
 
         <service
@@ -23,8 +24,8 @@
         <service
             android:name=".AutoTileService"
             android:exported="true"
-            android:icon="@android:drawable/ic_dialog_info"
-            android:label="Adaptive light"
+            android:icon="@mipmap/ic_launcher"
+            android:label="Adaptive Light"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
             <intent-filter>
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
@@ -43,6 +44,7 @@
         <activity
             android:name=".MainActivity"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|density|uiMode|keyboard|keyboardHidden|navigation|locale|layoutDirection|fontScale|fontWeightAdjustment|colorMode|touchscreen"
+            android:excludeFromRecents="true"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

@@ -125,7 +125,7 @@ class MainActivity : Activity() {
         }
 
         val title = TextView(this).apply {
-            text = "🥷 BacklightLearn"
+            text = "🥷 Adaptive Light"
             textSize = 20f; setTypeface(null, Typeface.BOLD)
         }
         statusView = TextView(this).apply {
