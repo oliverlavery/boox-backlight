@@ -161,6 +161,7 @@ class LearnService : Service(), SensorEventListener {
         } else {
             log("skip", mapOf("reason" to reason, "target" to "$lb/$lw", "current" to "$cb/$cw"))
         }
+        lastApplyLux = lux   // continuous trigger reference: always advance, applied or skipped
         publish()
     }
 
@@ -236,6 +237,25 @@ class LearnService : Service(), SensorEventListener {
             maybeActuate("cold_start")
             return
         }
+        // ---- continuous trigger ----
+        // Bucket boundaries are wide (log scale) — gradual light changes can sit
+        // "in band" for 10s+ before actuation. Trigger instead on material lux
+        // movement since the last apply/evaluation, independent of buckets.
+        // Edge-triggered: lastApplyLux updates on every evaluation, so each 25%
+        // move fires exactly one maybeActuate() — no per-event spam, no extra
+        // battery (sensor already streams at 15Hz; this is one comparison).
+        val refLux = lastApplyLux
+        if (refLux > 0f) {
+            val absDelta = Math.abs(lux - refLux)
+            // 25% relative in decent light; ≥3 lux absolute floor so dark-room
+            // changes (where % is meaningless) still trigger.
+            if (absDelta > Math.max(refLux * CONTINUOUS_REL_DELTA, CONTINUOUS_ABS_LUX) &&
+            android.os.SystemClock.elapsedRealtime() - lastContinuousApplyElapsedMs > CONTINUOUS_MIN_INTERVAL_MS) {
+                lastApplyLux = lux
+                lastContinuousApplyElapsedMs = android.os.SystemClock.elapsedRealtime()
+                maybeActuate("lux_delta_${String.format("%.0f", absDelta)}")
+            }
+        }
         // Power: log ONLY bucket entries — no heartbeat (sensor spams continuously;
         // 1/sec logging was ~86k flash writes/day).
         val bucket = LightModel.luxBucket(lux)
@@ -267,6 +287,10 @@ class LearnService : Service(), SensorEventListener {
 
     private var pendingBucket = -1
     private var pendingSinceMs = 0L
+
+    // continuous trigger state
+    private var lastApplyLux = -1f
+    private var lastContinuousApplyElapsedMs = 0L
 
     // churn guard state
     private var lastTargetB = -1; private var lastTargetW = -1
@@ -386,6 +410,9 @@ class LearnService : Service(), SensorEventListener {
         const val ECHO_MS = 6000L        // ignore mirror echo for 6s after actuation
         const val BOUNCE_MS = 3000L      // bucket must hold this long before actuation (hysteresis)
         const val TARGET_COOLDOWN_MS = 90 * 1000L  // don't re-actuate same target within 90s (mirror staleness guard)
+        const val CONTINUOUS_REL_DELTA = 0.25f     // actuate when lux moves >25% since last evaluation
+        const val CONTINUOUS_ABS_LUX = 3f          // ...or >3 lux absolute (dark-room floor)
+        const val CONTINUOUS_MIN_INTERVAL_MS = 3000L  // rate limit between continuous evaluations
         const val HUD_FLAG = 0                     // setLightValue 3-arg flag: suppresses system-UI slider HUD
         fun start(ctx: Context) = ctx.startForegroundService(Intent(ctx, LearnService::class.java))
     }
