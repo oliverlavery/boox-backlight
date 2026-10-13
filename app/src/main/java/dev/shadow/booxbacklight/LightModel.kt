@@ -8,6 +8,9 @@ import org.json.JSONObject
  *  - Warmth ≈ f(hour) + small lux term → per-hour-bucket EWMA (6 × 4h) + lux modifier
  *  - Recency authority: user's deliberate set = immediate bucket value (α=1)
  *  - Fallback: exact bucket → neighbouring bucket blend → prior
+ *  - Brightness lookups INTERPOLATE between bucket anchors in log-lux space
+ *    (2026-10-13): bucket cells are curve control points, not step values —
+ *    fixes visible "cliffs" when light drifts across a bucket boundary.
  * Native scale: 0..32 for both channels (calibrated 2026-09-18).
  */
 object LightModel {
@@ -22,6 +25,13 @@ object LightModel {
         for (i in LUX_BOUNDS.indices) if (lux < LUX_BOUNDS[i]) return i
         return LUX_BOUNDS.size
     }
+
+    /**
+     * Interpolation anchor lux per bucket = geometric centre of the bucket range
+     * (buckets: <2, <5, <10, <25, <60, <150, <400, <1000, rest → 9 anchors).
+     * Curve is sampled linearly in log(lux) between anchors; clamped outside the ends.
+     */
+    val BRIGHT_ANCHORS = floatArrayOf(1f, 3.16f, 7.07f, 15.8f, 38.7f, 94.9f, 245f, 632f, 1400f)
 
     fun hourBucket(epochHour: Int): Int = (epochHour / 4) % 6
 
@@ -60,7 +70,7 @@ object LightModel {
 
     /** Predict target values. Deadband applied by caller against current values. */
     fun predict(state: State, lux: Float, hour: Int): Pair<Int, Int> {
-        val b = bucketValue(state.brightness, luxBucket(lux))
+        val b = interpolatedBrightness(state.brightness, lux)
         val wBase = bucketValue(state.warmth, hourBucket(hour))
         val darkAdj = if (lux < 10f) state.warmthDarkAdj.value else 0f
         val w = (wBase + darkAdj * 0.3f).coerceIn(0f, NATIVE_MAX.toFloat())
@@ -79,6 +89,26 @@ object LightModel {
             right != null && right.count > 0 -> right.value
             else -> c.value // prior
         }
+    }
+
+    /**
+     * Continuous brightness lookup: piecewise-linear in log(lux) between the anchor
+     * cells. Cold cells fall back via bucketValue (neighbour blend), so the curve
+     * stays finite even early in learning. A truly big light change still lands
+     * immediately on the right curve point — we only removed the boundary cliffs.
+     */
+    fun interpolatedBrightness(cells: Array<Cell>, lux: Float): Float {
+        val a = BRIGHT_ANCHORS
+        if (lux <= a.first()) return bucketValue(cells, 0)
+        if (lux >= a.last()) return bucketValue(cells, a.size - 1)
+        var i = 0
+        while (i < a.size - 1 && a[i + 1] < lux) i++
+        val lo = a[i]; val hi = a[i + 1]
+        val t = (Math.log(lux.toDouble()) - Math.log(lo.toDouble())) /
+                (Math.log(hi.toDouble()) - Math.log(lo.toDouble()))
+        val v0 = bucketValue(cells, i)
+        val v1 = bucketValue(cells, i + 1)
+        return v0 + (t.toFloat() * (v1 - v0))
     }
 
     // --- persistence ---
