@@ -64,7 +64,8 @@ object LightModel {
         nativeWarmth?.let {
             val cell = state.warmth[hourBucket(hour)]
             state.learn(cell, it.toFloat(), 1f)
-            if (lux != null && lux < 10f) state.learn(state.warmthDarkAdj, it.toFloat(), 0.5f)
+            // Learn dark adj across the whole fade band, matching predict's 5→15 window.
+            if (lux != null && lux < 15f) state.learn(state.warmthDarkAdj, it.toFloat(), 0.5f)
         }
     }
 
@@ -72,7 +73,18 @@ object LightModel {
     fun predict(state: State, lux: Float, hour: Int): Pair<Int, Int> {
         val b = interpolatedBrightness(state.brightness, lux)
         val wBase = bucketValue(state.warmth, hourBucket(hour))
-        val darkAdj = if (lux < 10f) state.warmthDarkAdj.value else 0f
+        // Dark-warmth modifier FADES in log-lux across 5→15 lx (2026-10-13):
+        // the old hard <10 gate flip-flopped warmth 16↔25 whenever morning
+        // light hovered around 10 lx (confirmed in observations.jsonl).
+        val darkAdj = when {
+            lux <= 5f -> state.warmthDarkAdj.value
+            lux >= 15f -> 0f
+            else -> {
+                val t = (Math.log(lux.toDouble()) - Math.log(5.0)) /
+                        (Math.log(15.0) - Math.log(5.0))
+                state.warmthDarkAdj.value * (1f - t.toFloat())
+            }
+        }
         val w = (wBase + darkAdj * 0.3f).coerceIn(0f, NATIVE_MAX.toFloat())
         return b.toInt().coerceIn(0, NATIVE_MAX) to w.toInt().coerceIn(0, NATIVE_MAX)
     }
